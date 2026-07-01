@@ -1,0 +1,29 @@
+{
+  "keywords": [
+    "DevOps Engineer",
+    "Infrastructure Engineer",
+    "Junior DevOps Engineer",
+    "AWS Cloud Engineer",
+    "AWS Engineer",
+    "SRE",
+    "Site Reliability Engineer",
+    "CloudOps Engineer",
+    "Operations Engineer"
+  ],
+  "location": "India",
+  "time_window_seconds": 3600,
+  "pages_to_fetch": 2,
+  "results_per_page": 10,
+
+  "google_service_account_json": "service_account.json",
+  "spreadsheet_id": "YOUR_GOOGLE_SPREADSHEET_ID",
+
+  "email_from": "your-email@gmail.com",
+  "email_app_password": "YOUR_GMAIL_APP_PASSWORD",
+  "email_to": "recipient@example.com",
+
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+
+  "email_on_every_run": true
+}
