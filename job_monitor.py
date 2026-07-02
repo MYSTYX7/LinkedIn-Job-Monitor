@@ -104,6 +104,17 @@ def parse_jobs(html: str) -> list[dict]:
     return jobs
 
 
+def filter_jobs(jobs: list[dict]) -> list[dict]:
+    exclude = [kw.lower() for kw in CFG.get("exclude_title_keywords", [])]
+    if not exclude:
+        return jobs
+    filtered = [j for j in jobs if not any(kw in j["title"].lower() for kw in exclude)]
+    removed = len(jobs) - len(filtered)
+    if removed:
+        log.info("Filtered out %d senior-level job(s) based on exclude_title_keywords.", removed)
+    return filtered
+
+
 def fetch_jobs_for_location(location: str, time_window_seconds: int, pages_to_fetch: int) -> list[dict]:
     base_url = build_base_url(location, time_window_seconds)
     pages = pages_to_fetch
@@ -289,6 +300,7 @@ def main():
     group_cfg = CFG["location_groups"][group]
     log.info("===== Job fetcher run started [group: %s] =====", group)
     jobs = fetch_all_jobs(group_cfg)
+    jobs = filter_jobs(jobs)
 
     try:
         worksheet = get_sheet(group)

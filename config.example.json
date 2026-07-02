@@ -10,12 +10,25 @@
     "CloudOps Engineer",
     "Operations Engineer"
   ],
-
+  "exclude_title_keywords": [
+    "Senior",
+    "Sr.",
+    "Sr ",
+    "Lead",
+    "Principal",
+    "Staff",
+    "Manager",
+    "Director",
+    "Head of",
+    "VP",
+    "Vice President",
+    "Chief",
+    "Associate VP",
+    "Distinguished"
+  ],
   "location_groups": {
     "india": {
-      "locations": [
-        "India"
-      ],
+      "locations": ["India"],
       "time_window_seconds": 3600,
       "pages_to_fetch": 2
     },
