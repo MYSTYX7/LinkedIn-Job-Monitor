@@ -173,17 +173,17 @@ def ensure_headers(worksheet):
         worksheet.freeze(rows=1)
 
 
-def get_existing_links(worksheet) -> set:
+def get_existing_job_ids(worksheet) -> set:
     try:
-        links = worksheet.col_values(6)  # column F = Link
+        job_ids = worksheet.col_values(1)  # column A = Job ID
     except Exception:
-        links = []
-    return set(links[1:])  # skip header
+        job_ids = []
+    return set(job_ids[1:])  # skip header
 
 
 def append_new_jobs(worksheet, jobs: list[dict]) -> list[dict]:
-    existing_links = get_existing_links(worksheet)
-    new_jobs = [j for j in jobs if j["link"] not in existing_links]
+    existing_job_ids = get_existing_job_ids(worksheet)
+    new_jobs = [j for j in jobs if j["job_id"] not in existing_job_ids]
     if new_jobs:
         worksheet.append_rows(
             [[j["job_id"], j["title"], j["company"], j["location"], j["linkedin_posted"], j["link"], j["fetched_at"]] for j in new_jobs],
