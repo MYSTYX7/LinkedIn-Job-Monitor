@@ -6,7 +6,10 @@ appends new (not-yet-seen) postings to a Google Sheet, and emails a summary
 notification when it runs.
 
 Settings are read from config.json (next to this script).
-Designed to be triggered every hour by Windows Task Scheduler.
+Designed to be triggered by Windows Task Scheduler with a --group argument:
+
+    python job_monitor.py --group india           (every 2 hours)
+    python job_monitor.py --group international   (every 6 hours)
 """
 
 import os
@@ -16,6 +19,7 @@ import time
 import random
 import smtplib
 import logging
+import argparse
 import urllib.parse
 import requests
 from datetime import datetime, timedelta
@@ -55,9 +59,9 @@ SHEET_HEADERS = ["Job ID", "Title", "Company", "Location", "Posted on LinkedIn",
 # --------------------------------------------------------------------------
 # LinkedIn fetching
 # --------------------------------------------------------------------------
-def build_base_url() -> str:
+def build_base_url(location: str, time_window_seconds: int) -> str:
     keyword_query = "(" + " OR ".join(f'"{kw}"' for kw in CFG["keywords"]) + ")"
-    params = {"keywords": keyword_query, "location": CFG["location"], "f_TPR": f"r{CFG['time_window_seconds']}"}
+    params = {"keywords": keyword_query, "location": location, "f_TPR": f"r{time_window_seconds}"}
     return f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?{urllib.parse.urlencode(params, safe='()')}"
 
 
@@ -100,9 +104,9 @@ def parse_jobs(html: str) -> list[dict]:
     return jobs
 
 
-def fetch_all_jobs() -> list[dict]:
-    base_url = build_base_url()
-    pages = CFG.get("pages_to_fetch", 2)
+def fetch_jobs_for_location(location: str, time_window_seconds: int, pages_to_fetch: int) -> list[dict]:
+    base_url = build_base_url(location, time_window_seconds)
+    pages = pages_to_fetch
     per_page = CFG.get("results_per_page", 10)
     all_jobs = []
     for page_num in range(pages):
@@ -110,34 +114,57 @@ def fetch_all_jobs() -> list[dict]:
         try:
             html = fetch_jobs_page(base_url, start)
         except requests.RequestException as exc:
-            log.error("Request failed for start=%s: %s", start, exc)
+            log.error("Request failed for location=%s start=%s: %s", location, start, exc)
             break
         jobs = parse_jobs(html)
         if not jobs:
-            log.info("No results at start=%s, stopping pagination.", start)
+            log.info("No results at location=%s start=%s, stopping pagination.", location, start)
             break
         all_jobs.extend(jobs)
         if page_num < pages - 1:
             time.sleep(random.uniform(5, 10))
-    log.info("Fetched %d job listings total.", len(all_jobs))
+    return all_jobs
+
+
+def fetch_all_jobs(group_cfg: dict) -> list[dict]:
+    locations = group_cfg["locations"]
+    time_window = group_cfg["time_window_seconds"]
+    pages_to_fetch = group_cfg["pages_to_fetch"]
+    all_jobs = []
+    seen_ids = set()
+    for i, location in enumerate(locations):
+        log.info("Fetching jobs for location: %s", location)
+        jobs = fetch_jobs_for_location(location, time_window, pages_to_fetch)
+        for job in jobs:
+            if job["job_id"] not in seen_ids:
+                seen_ids.add(job["job_id"])
+                all_jobs.append(job)
+        log.info("Fetched %d job(s) for %s (%d unique total so far).", len(jobs), location, len(all_jobs))
+        if i < len(locations) - 1:
+            time.sleep(random.uniform(8, 15))  # pause between locations
+    log.info("Fetched %d unique job(s) total across all locations.", len(all_jobs))
     return all_jobs
 
 
 # --------------------------------------------------------------------------
 # Google Sheets
 # --------------------------------------------------------------------------
-def cleanup_old_worksheets(spreadsheet):
+def cleanup_old_worksheets(spreadsheet, group: str):
     cutoff_date = datetime.now().date() - timedelta(days=7)
     for ws in spreadsheet.worksheets():
+        # Only clean up worksheets belonging to this group (e.g. "30-06-2025-india")
+        if not ws.title.endswith(f"-{group}"):
+            continue
         try:
-            if datetime.strptime(ws.title, "%d-%m-%Y").date() < cutoff_date:
+            sheet_date = datetime.strptime(ws.title.replace(f"-{group}", ""), "%d-%m-%Y").date()
+            if sheet_date < cutoff_date:
                 spreadsheet.del_worksheet(ws)
                 log.info("Deleted old worksheet: %s", ws.title)
         except ValueError:
             continue
 
 
-def get_sheet():
+def get_sheet(group: str):
     creds_path = os.path.join(BASE_DIR, CFG["google_service_account_json"])
     if not os.path.exists(creds_path):
         raise FileNotFoundError(
@@ -155,14 +182,14 @@ def get_sheet():
     except Exception as exc:
         raise RuntimeError(f"Failed to open spreadsheet: {exc}")
 
-    cleanup_old_worksheets(sh)
-    today = datetime.now().strftime("%d-%m-%Y")
+    cleanup_old_worksheets(sh, group)
+    tab_name = f"{datetime.now().strftime('%d-%m-%Y')}-{group}"
     try:
-        worksheet = sh.worksheet(today)
-        log.info("Using worksheet: %s", today)
+        worksheet = sh.worksheet(tab_name)
+        log.info("Using worksheet: %s", tab_name)
     except gspread.exceptions.WorksheetNotFound:
-        log.info("Worksheet '%s' not found — creating it.", today)
-        worksheet = sh.add_worksheet(title=today, rows=1000, cols=10)
+        log.info("Worksheet '%s' not found — creating it.", tab_name)
+        worksheet = sh.add_worksheet(title=tab_name, rows=1000, cols=10)
     return worksheet
 
 
@@ -216,7 +243,7 @@ def send_email(subject: str, body_html: str):
         log.error("Failed to send email: %s", exc)
 
 
-def build_email_body(new_jobs: list[dict]) -> str:
+def build_email_body(new_jobs: list[dict], group: str) -> str:
     sheet_url = f"https://docs.google.com/spreadsheets/d/{CFG['spreadsheet_id']}"
     if new_jobs:
         rows_html = "".join(
@@ -230,7 +257,7 @@ def build_email_body(new_jobs: list[dict]) -> str:
             for j in new_jobs
         )
         content = (
-            f"<p><b>{len(new_jobs)} new job(s)</b> found.</p>"
+            f"<p><b>{len(new_jobs)} new job(s)</b> found for <b>{group}</b>.</p>"
             "<table style='border-collapse:collapse;width:100%;font-family:sans-serif;font-size:14px;'>"
             "<tr style='background:#f2f2f2;'>"
             "<th style='padding:6px;border:1px solid #ddd;text-align:left;'>Title</th>"
@@ -242,7 +269,7 @@ def build_email_body(new_jobs: list[dict]) -> str:
             f"{rows_html}</table>"
         )
     else:
-        content = "<p>No new jobs were found in this run.</p>"
+        content = f"<p>No new jobs were found for <b>{group}</b> in this run.</p>"
     return f"<html><body style='font-family:sans-serif;'>{content}<p style='margin-top:20px;'><a href='{sheet_url}'>Open Spreadsheet</a></p></body></html>"
 
 
@@ -250,11 +277,21 @@ def build_email_body(new_jobs: list[dict]) -> str:
 # Main
 # --------------------------------------------------------------------------
 def main():
-    log.info("===== Job fetcher run started =====")
-    jobs = fetch_all_jobs()
+    parser = argparse.ArgumentParser(description="LinkedIn Job Monitor")
+    parser.add_argument("--group", required=True, help="Location group to run (e.g. india, international)")
+    args = parser.parse_args()
+
+    group = args.group.lower()
+    if group not in CFG["location_groups"]:
+        log.error("Unknown group '%s'. Available groups: %s", group, list(CFG["location_groups"].keys()))
+        sys.exit(1)
+
+    group_cfg = CFG["location_groups"][group]
+    log.info("===== Job fetcher run started [group: %s] =====", group)
+    jobs = fetch_all_jobs(group_cfg)
 
     try:
-        worksheet = get_sheet()
+        worksheet = get_sheet(group)
         ensure_headers(worksheet)
         new_jobs = append_new_jobs(worksheet, jobs)
         sheet_error = None
@@ -265,10 +302,10 @@ def main():
 
     if CFG.get("email_on_every_run", True) or new_jobs or sheet_error:
         if sheet_error:
-            subject = "LinkedIn Jobs: ERROR writing to Google Sheet"
+            subject = f"LinkedIn Jobs [{group}]: ERROR writing to Google Sheet"
             body = (
                 f"<html><body style='font-family:sans-serif;'>"
-                f"<h2>LinkedIn Job Fetcher — Sheet Write Failed</h2>"
+                f"<h2>LinkedIn Job Fetcher — Sheet Write Failed [{group}]</h2>"
                 f"<p>Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>"
                 f"<p>{len(jobs)} job(s) fetched, but sheet write failed:</p>"
                 f"<pre style='background:#f7f7f7;padding:10px;border:1px solid #ddd;white-space:pre-wrap;'>{sheet_error}</pre>"
@@ -276,13 +313,13 @@ def main():
                 f"</body></html>"
             )
         else:
-            subject = f"🟢 {len(new_jobs)} new job(s) found" if new_jobs else "LinkedIn Jobs: run complete, no new postings"
-            body = build_email_body(new_jobs)
+            subject = f"🟢 [{group}] {len(new_jobs)} new job(s) found" if new_jobs else f"LinkedIn Jobs [{group}]: run complete, no new postings"
+            body = build_email_body(new_jobs, group)
         send_email(subject, body)
     else:
         log.info("email_on_every_run is false and no new jobs found — skipping email.")
 
-    log.info("===== Job fetcher run finished =====")
+    log.info("===== Job fetcher run finished [group: %s] =====", group)
 
 
 if __name__ == "__main__":
