@@ -60,5 +60,13 @@
   "smtp_host": "smtp.gmail.com",
   "smtp_port": 587,
 
-  "email_on_every_run": true
+  "email_on_every_run": true,
+  
+  "shorten_urls": true,
+
+  "telegram": {
+    "enabled": true,
+    "bot_token": "TELEGRAM_BOT_TOKEN",
+    "chat_id": "TELEGRAM_GROUP_ID"
+  }
 }

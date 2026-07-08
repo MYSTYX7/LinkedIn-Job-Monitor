@@ -53,7 +53,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
 ]
 
-SHEET_HEADERS = ["Job ID", "Title", "Company", "Location", "Posted on LinkedIn", "Link", "Fetched At"]
+SHEET_HEADERS = ["Job ID", "Title", "Company", "Location", "Posted on LinkedIn", "Link", "Applied?", "Fetched At"]
 
 
 # --------------------------------------------------------------------------
@@ -104,6 +104,30 @@ def parse_jobs(html: str) -> list[dict]:
     return jobs
 
 
+def shorten_url(url: str) -> str:
+    try:
+        resp = requests.get(
+            "https://tinyurl.com/api-create.php",
+            params={"url": url},
+            timeout=10,
+        )
+        if resp.status_code == 200 and resp.text.startswith("https://tinyurl.com"):
+            return resp.text.strip()
+    except Exception as exc:
+        log.warning("TinyURL shortening failed for %s: %s — using original URL.", url, exc)
+    return url
+ 
+ 
+def shorten_job_urls(jobs: list[dict]) -> list[dict]:
+    if not CFG.get("shorten_urls", False):
+        return jobs
+    log.info("Shortening URLs for %d job(s) via TinyURL...", len(jobs))
+    for job in jobs:
+        job["link"] = shorten_url(job["link"])
+        time.sleep(0.3)
+    return jobs
+
+
 def filter_jobs(jobs: list[dict]) -> list[dict]:
     exclude = [kw.lower() for kw in CFG.get("exclude_title_keywords", [])]
     if not exclude:
@@ -117,10 +141,9 @@ def filter_jobs(jobs: list[dict]) -> list[dict]:
 
 def fetch_jobs_for_location(location: str, time_window_seconds: int, pages_to_fetch: int) -> list[dict]:
     base_url = build_base_url(location, time_window_seconds)
-    pages = pages_to_fetch
     per_page = CFG.get("results_per_page", 10)
     all_jobs = []
-    for page_num in range(pages):
+    for page_num in range(pages_to_fetch):
         start = page_num * per_page
         try:
             html = fetch_jobs_page(base_url, start)
@@ -132,7 +155,7 @@ def fetch_jobs_for_location(location: str, time_window_seconds: int, pages_to_fe
             log.info("No results at location=%s start=%s, stopping pagination.", location, start)
             break
         all_jobs.extend(jobs)
-        if page_num < pages - 1:
+        if page_num < pages_to_fetch - 1:
             time.sleep(random.uniform(5, 10))
     return all_jobs
 
@@ -206,8 +229,8 @@ def get_sheet(group: str):
 
 def ensure_headers(worksheet):
     if worksheet.row_values(1) != SHEET_HEADERS:
-        worksheet.update(range_name="A1:G1", values=[SHEET_HEADERS])
-        worksheet.format("A1:G1", {"textFormat": {"bold": True}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"})
+        worksheet.update(range_name="A1:H1", values=[SHEET_HEADERS])
+        worksheet.format("A1:H1", {"textFormat": {"bold": True}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"})
         worksheet.freeze(rows=1)
 
 
@@ -223,10 +246,23 @@ def append_new_jobs(worksheet, jobs: list[dict]) -> list[dict]:
     existing_job_ids = get_existing_job_ids(worksheet)
     new_jobs = [j for j in jobs if j["job_id"] not in existing_job_ids]
     if new_jobs:
+        next_row = len(worksheet.get_all_values()) + 1
         worksheet.append_rows(
-            [[j["job_id"], j["title"], j["company"], j["location"], j["linkedin_posted"], j["link"], j["fetched_at"]] for j in new_jobs],
+            [[j["job_id"], j["title"], j["company"], j["location"], j["linkedin_posted"], j["link"], False, j["fetched_at"]] for j in new_jobs],
             value_input_option="RAW",
         )
+        worksheet.spreadsheet.batch_update({"requests": [{
+            "setDataValidation": {
+                "range": {
+                    "sheetId": worksheet.id,
+                    "startRowIndex": next_row - 1,
+                    "endRowIndex": next_row - 1 + len(new_jobs),
+                    "startColumnIndex": 6,  # column G = Applied? (0-indexed)
+                    "endColumnIndex": 7,
+                },
+                "rule": {"condition": {"type": "BOOLEAN"}, "showCustomUi": True},
+            }
+        }]})
         log.info("Appended %d new job(s) to the sheet.", len(new_jobs))
     else:
         log.info("No new jobs found this run.")
@@ -254,6 +290,44 @@ def send_email(subject: str, body_html: str):
         log.error("Failed to send email: %s", exc)
 
 
+def send_telegram(new_jobs: list[dict], group: str):
+    tg = CFG.get("telegram", {})
+    if not tg.get("enabled", False):
+        return
+    api = f"https://api.telegram.org/bot{tg['bot_token']}/sendMessage"
+ 
+    def post(text: str):
+        try:
+            resp = requests.post(api, json={"chat_id": tg["chat_id"], "text": text, "parse_mode": "HTML"}, timeout=10)
+            if not resp.ok:
+                log.error("Telegram API error: %s", resp.text)
+        except Exception as exc:
+            log.error("Failed to send Telegram message: %s", exc)
+ 
+    if not new_jobs:
+        if CFG.get("email_on_every_run", True):
+            post(f"✅ <b>LinkedIn Cloud & DevOps Jobs [{group.upper()}]</b>\nNo new postings currently.")
+        return
+ 
+    # Build one message per run, splitting only when Telegram's 4096-char limit is approached
+    chunk = f"🔔 <b>LinkedIn Cloud & DevOps Jobs - {len(new_jobs)} new posting(s) [{group.upper()}]</b>\n"
+    for i, j in enumerate(new_jobs, 1):
+        entry = (
+            f"\n<b>{i}. {j['title']}</b>\n"
+            f"🏢 {j['company']}\n"
+            f"📍 {j['location']}\n"
+            f"🕐 {j['linkedin_posted']}\n"
+            f"🔗 {j['link']}\n"
+        )
+        if len(chunk) + len(entry) > 4000:
+            post(chunk)
+            time.sleep(1)
+            chunk = entry
+        else:
+            chunk += entry
+    if chunk:
+        post(chunk)
+    
 def build_email_body(new_jobs: list[dict], group: str) -> str:
     sheet_url = f"https://docs.google.com/spreadsheets/d/{CFG['spreadsheet_id']}"
     if new_jobs:
@@ -301,6 +375,7 @@ def main():
     log.info("===== Job fetcher run started [group: %s] =====", group)
     jobs = fetch_all_jobs(group_cfg)
     jobs = filter_jobs(jobs)
+    jobs = shorten_job_urls(jobs)
 
     try:
         worksheet = get_sheet(group)
@@ -328,6 +403,7 @@ def main():
             subject = f"🟢 [{group}] {len(new_jobs)} new job(s) found" if new_jobs else f"LinkedIn Jobs [{group}]: run complete, no new postings"
             body = build_email_body(new_jobs, group)
         send_email(subject, body)
+        send_telegram(new_jobs, group)
     else:
         log.info("email_on_every_run is false and no new jobs found — skipping email.")
 
