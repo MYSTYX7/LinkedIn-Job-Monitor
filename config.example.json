@@ -10,6 +10,7 @@
     "CloudOps Engineer",
     "Operations Engineer"
   ],
+
   "exclude_title_keywords": [
     "Senior",
     "Sr.",
@@ -26,9 +27,12 @@
     "Associate VP",
     "Distinguished"
   ],
+
   "location_groups": {
     "india": {
-      "locations": ["India"],
+      "locations": [
+        "India"
+      ],
       "time_window_seconds": 3600,
       "pages_to_fetch": 2
     },
@@ -53,7 +57,7 @@
   "google_service_account_json": "service_account.json",
   "spreadsheet_id": "YOUR_GOOGLE_SPREADSHEET_ID",
 
-  "email_from": "your-email@gmail.com",
+  "email_from": "your_email@gmail.com",
   "email_app_password": "YOUR_GMAIL_APP_PASSWORD",
   "email_to": "recipient@example.com",
 
@@ -61,12 +65,20 @@
   "smtp_port": 587,
 
   "email_on_every_run": true,
-  
+
   "shorten_urls": true,
 
   "telegram": {
     "enabled": true,
-    "bot_token": "TELEGRAM_BOT_TOKEN",
-    "chat_id": "TELEGRAM_GROUP_ID"
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_CHAT_ID"
+  },
+
+  "resume_match": {
+    "enabled": true,
+    "base_url": "https://qwen.aikit.club/v1",
+    "model": "qwen3.7-plus",
+    "api_key": "YOUR_QWEN_API_KEY",
+    "timeout_seconds": 30
   }
 }
